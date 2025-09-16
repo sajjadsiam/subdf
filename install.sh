@@ -1,5 +1,23 @@
 #!/bin/bash
 
+# Set system optimizations
+if [ "$(id -u)" -eq 0 ]; then
+    # Increase file descriptor limits
+    ulimit -n 65535 2>/dev/null || true
+    # Increase process limits
+    ulimit -u 2048 2>/dev/null || true
+    # Optimize network settings
+    sysctl -w net.ipv4.tcp_max_syn_backlog=8192 >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_fin_timeout=30 >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_keepalive_time=1200 >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_max_tw_buckets=1440000 >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_timestamps=1 >/dev/null 2>&1 || true
+fi
+
+# Set script error handling
+set -e              # Exit on error
+set -o pipefail     # Exit if any command in a pipe fails
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -32,21 +50,40 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to retry commands with timeout
+# Function to check internet connectivity
+check_internet() {
+    if ! ping -c 1 8.8.8.8 &> /dev/null; then
+        echo -e "${RED}No internet connection. Please check your connection and try again.${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Function to handle errors
+handle_error() {
+    local error_msg="$1"
+    echo -e "${RED}Error: $error_msg${NC}"
+    exit 1
+}
+
+# Function to retry commands with timeout and better error handling
 retry_command() {
     local cmd="$1"
+    local tool_name="$2"
     local retries=3
     local timeout=30
     local count=0
+    local wait_time=5
     
-    until $cmd || [ $count -eq $retries ]; do
-        echo -e "${YELLOW}Command failed, retrying ($((count+1))/$retries)...${NC}"
+    until eval "$cmd" || [ $count -eq $retries ]; do
+        echo -e "${YELLOW}[$tool_name] Command failed, retrying in ${wait_time}s ($(($count+1))/$retries)...${NC}"
         count=$((count+1))
-        sleep 5
+        wait_time=$((wait_time * 2))  # Exponential backoff
+        sleep $wait_time
     done
     
     if [ $count -eq $retries ]; then
-        echo -e "${RED}Failed after $retries attempts${NC}"
+        echo -e "${RED}[$tool_name] Failed after $retries attempts${NC}"
         return 1
     fi
     return 0
@@ -82,22 +119,350 @@ sudo apt install -y git curl wget python3 python3-pip jq
 print_section "Go Installation"
 install_go
 
-# Install Go-based tools
+# Set Go environment variables for faster installation
+export GO111MODULE=on
+export GOPROXY=direct,https://proxy.golang.org
+export GOSUMDB=off
+export GONOSUMDB=github.com/*
+
+# Install Go-based tools with error handling and parallel installation
 print_section "Go-based Tools Installation"
 print_subsection "Installing reconnaissance tools"
-go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-go install -v github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest
-go install -v github.com/tomnomnom/assetfinder@latest
-go install -v github.com/tomnomnom/anew@latest
-go install -v github.com/bp0lr/gauplus@latest
-go install -v github.com/d3mondev/puredns/v2@latest
-go install -v github.com/lc/gau/v2/cmd/gau@latest
-go install -v github.com/projectdiscovery/chaos-client/cmd/chaos@latest
-go install -v github.com/projectdiscovery/katana/cmd/katana@latest
-go install -v github.com/ffuf/ffuf/v2@latest
-go install -v github.com/tomnomnom/waybackurls@latest
+
+# Define tools to install
+declare -A tools=(
+    ["subfinder"]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+    ["httpx"]="github.com/projectdiscovery/httpx/cmd/httpx@latest"
+    ["dnsx"]="github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+    ["nuclei"]="github.com/projectdiscovery/nuclei/v2/cmd/nuclei@latest"
+    ["assetfinder"]="github.com/tomnomnom/assetfinder@latest"
+    ["anew"]="github.com/tomnomnom/anew@latest"
+    ["gauplus"]="github.com/bp0lr/gauplus@latest"
+    ["puredns"]="github.com/d3mondev/puredns/v2@latest"
+    ["gau"]="github.com/lc/gau/v2/cmd/gau@latest"
+    ["chaos"]="github.com/projectdiscovery/chaos-client/cmd/chaos@latest"
+    ["katana"]="github.com/projectdiscovery/katana/cmd/katana@latest"
+    ["ffuf"]="github.com/ffuf/ffuf/v2@latest"
+    ["waybackurls"]="github.com/tomnomnom/waybackurls@latest"
+)
+
+# Function to test tool functionality
+test_tool() {
+    local tool_name=$1
+    case $tool_name in
+        "subfinder")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "httpx")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "dnsx")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "nuclei")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "assetfinder")
+            $tool_name -h >/dev/null 2>&1
+            ;;
+        "anew")
+            echo "test" | $tool_name >/dev/null 2>&1
+            ;;
+        "gauplus")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "puredns")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "gau")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "chaos")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "katana")
+            $tool_name -version >/dev/null 2>&1
+            ;;
+        "ffuf")
+            $tool_name -V >/dev/null 2>&1
+            ;;
+        "waybackurls")
+            $tool_name -h >/dev/null 2>&1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+    return $?
+}
+
+# Function to install a single tool
+install_tool() {
+    local tool_name=$1
+    local tool_path=$2
+    echo -e "${CYAN}Installing $tool_name...${NC}"
+    
+    # Try installation
+    if ! retry_command "go install -v $tool_path" "$tool_name"; then
+        echo -e "${RED}Failed to install $tool_name${NC}"
+        return 1
+    fi
+    
+    # Verify installation
+    if ! command -v "$tool_name" >/dev/null 2>&1; then
+        echo -e "${RED}$tool_name not found in PATH after installation${NC}"
+        return 1
+    fi
+    
+    # Test tool functionality
+    echo -e "${CYAN}Testing $tool_name functionality...${NC}"
+    if ! test_tool "$tool_name"; then
+        echo -e "${RED}$tool_name failed functionality test${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}Successfully installed and verified $tool_name${NC}"
+    return 0
+}
+
+# Install tools with progress tracking
+total_tools=${#tools[@]}
+current_tool=0
+failed_tools=()
+
+for tool_name in "${!tools[@]}"; do
+    current_tool=$((current_tool + 1))
+    echo -e "\n${YELLOW}[$current_tool/$total_tools] Installing $tool_name${NC}"
+    
+    if ! install_tool "$tool_name" "${tools[$tool_name]}"; then
+        failed_tools+=("$tool_name")
+    fi
+done
+
+# Report installation results
+if [ ${#failed_tools[@]} -eq 0 ]; then
+    echo -e "\n${GREEN}${BOLD}All tools installed successfully!${NC}"
+    
+    # Setup environment optimizations
+    cat >> ~/.bashrc << 'EOF'
+
+# SubdomainFury optimizations
+export HTTPX_THREADS=50
+export HTTPX_TIMEOUT=10
+export GAU_THREADS=50
+export SUBFINDER_THREADS=50
+export GOMAXPROCS=$(nproc)
+export GO111MODULE=on
+export GODEBUG=netdns=go
+
+# Increase file descriptor limit
+ulimit -n 65535 2>/dev/null || true
+
+# Tool-specific rate limits
+export HTTPX_RATE_LIMIT=150
+export GAU_RATE_LIMIT=150
+EOF
+
+    # Create configuration directories
+    mkdir -p ~/.config/subfinder
+    mkdir -p ~/.config/nuclei
+    mkdir -p ~/.config/amass
+    
+    echo -e "${GREEN}${BOLD}✓ Environment configured successfully!${NC}"
+    echo -e "${YELLOW}Please run 'source ~/.bashrc' to apply the changes${NC}"
+else
+    echo -e "\n${RED}${BOLD}The following tools failed to install:${NC}"
+    for tool in "${failed_tools[@]}"; do
+        echo -e "${RED}- $tool${NC}"
+    done
+    echo -e "\n${YELLOW}Please try installing these tools manually or check your internet connection.${NC}"
+fi
+
+# Final verification
+print_section "Final Verification"
+echo -e "${CYAN}Performing comprehensive verification...${NC}"
+
+# Verify critical components
+verify_components() {
+    local all_good=true
+    local total_checks=0
+    local passed_checks=0
+    
+    print_subsection "System Requirements"
+    
+    # Check system resources
+    echo -ne "${CYAN}Checking system resources...${NC}"
+    total_checks=$((total_checks + 1))
+    if [ $(nproc) -ge 2 ] && [ $(free -m | awk '/Mem:/ {print $2}') -ge 2048 ]; then
+        echo -e "${GREEN} ✓${NC}"
+        passed_checks=$((passed_checks + 1))
+    else
+        echo -e "${YELLOW} ⚠ (Limited resources may affect performance)${NC}"
+        passed_checks=$((passed_checks + 1))
+    fi
+    
+    # Check Go installation
+    echo -ne "${CYAN}Checking Go installation...${NC}"
+    total_checks=$((total_checks + 1))
+    if go version &>/dev/null; then
+        echo -e "${GREEN} ✓ $(go version)${NC}"
+        passed_checks=$((passed_checks + 1))
+    else
+        echo -e "${RED} ✗${NC}"
+        all_good=false
+    fi
+    
+    print_subsection "Tool Verification"
+    
+    # Check each tool with detailed testing
+    for tool in "${!tools[@]}"; do
+        total_checks=$((total_checks + 3))  # Installation, PATH, and functionality checks
+        
+        echo -e "\n${CYAN}Checking $tool:${NC}"
+        
+        # Check if tool is installed
+        echo -ne "  ├─ Installation: "
+        if command -v "$tool" &>/dev/null; then
+            echo -e "${GREEN}✓${NC}"
+            passed_checks=$((passed_checks + 1))
+        else
+            echo -e "${RED}✗${NC}"
+            all_good=false
+            continue
+        fi
+        
+        # Check if tool is in PATH
+        echo -ne "  ├─ PATH: "
+        if which "$tool" &>/dev/null; then
+            echo -e "${GREEN}✓ ($(which "$tool"))${NC}"
+            passed_checks=$((passed_checks + 1))
+        else
+            echo -e "${RED}✗${NC}"
+            all_good=false
+            continue
+        fi
+        
+        # Test tool functionality
+        echo -ne "  └─ Functionality: "
+        if test_tool "$tool"; then
+            echo -e "${GREEN}✓${NC}"
+            passed_checks=$((passed_checks + 1))
+        else
+            echo -e "${RED}✗${NC}"
+            all_good=false
+        fi
+    done
+    
+    print_subsection "Environment Verification"
+    
+    # Check environment variables
+    echo -ne "${CYAN}Checking environment variables...${NC}"
+    total_checks=$((total_checks + 1))
+    if [ ! -z "$GOPATH" ] && [ ! -z "$GOROOT" ]; then
+        echo -e "${GREEN} ✓${NC}"
+        passed_checks=$((passed_checks + 1))
+    else
+        echo -e "${RED} ✗${NC}"
+        all_good=false
+    fi
+    
+    # Calculate success percentage
+    local success_rate=$(( (passed_checks * 100) / total_checks ))
+    
+    echo -e "\n${CYAN}Verification Summary:${NC}"
+    echo -e "├─ Total Checks: $total_checks"
+    echo -e "├─ Passed: $passed_checks"
+    echo -e "└─ Success Rate: $success_rate%"
+    
+    return $all_good
+}
+
+# Function to repair tool installation
+repair_tool() {
+    local tool_name=$1
+    local tool_path=$2
+    
+    echo -e "${YELLOW}Attempting to repair $tool_name...${NC}"
+    
+    # Remove existing installation
+    rm -f "$(which "$tool_name" 2>/dev/null)" 2>/dev/null
+    
+    # Clean Go cache for this tool
+    go clean -cache -modcache "$tool_path"
+    
+    # Reinstall tool
+    if install_tool "$tool_name" "$tool_path"; then
+        echo -e "${GREEN}Successfully repaired $tool_name${NC}"
+        return 0
+    else
+        echo -e "${RED}Failed to repair $tool_name${NC}"
+        return 1
+    fi
+}
+
+# Verify and repair if needed
+if verify_components; then
+    echo -e "\n${GREEN}${BOLD}Installation completed successfully!${NC}"
+    echo -e "${CYAN}All tools are properly installed and functioning.${NC}"
+else
+    echo -e "\n${YELLOW}${BOLD}Some issues were detected. Attempting repairs...${NC}"
+    
+    for tool_name in "${!tools[@]}"; do
+        if ! command -v "$tool_name" &>/dev/null || ! test_tool "$tool_name"; then
+            repair_tool "$tool_name" "${tools[$tool_name]}"
+        fi
+    done
+    
+    # Final verification after repairs
+    if verify_components; then
+        echo -e "\n${GREEN}${BOLD}All issues have been resolved!${NC}"
+        echo -e "${CYAN}SubdomainFury is ready to use.${NC}"
+    else
+        echo -e "\n${RED}${BOLD}Some issues could not be resolved automatically.${NC}"
+        echo -e "${CYAN}Please try the following:${NC}"
+        echo -e "1. Run 'source ~/.bashrc'"
+        echo -e "2. Check your Go installation with 'go version'"
+        echo -e "3. Ensure GOPATH is set correctly"
+        echo -e "4. Try running './install.sh' again"
+        echo -e "5. If problems persist, please report the issue"
+    fi
+fi
+
+# Create a test file to verify all tools
+cat > test_tools.sh << 'EOF'
+#!/bin/bash
+# Tool testing script
+echo "Testing all installed tools..."
+
+tools=(subfinder httpx dnsx nuclei assetfinder anew gauplus puredns gau chaos katana ffuf waybackurls)
+
+for tool in "${tools[@]}"; do
+    echo -n "Testing $tool... "
+    if command -v "$tool" >/dev/null 2>&1; then
+        case $tool in
+            "subfinder"|"httpx"|"dnsx"|"nuclei"|"gauplus"|"puredns"|"gau"|"chaos"|"katana")
+                if $tool -version >/dev/null 2>&1; then
+                    echo -e "\e[32m✓\e[0m"
+                else
+                    echo -e "\e[31m✗\e[0m"
+                fi
+                ;;
+            *)
+                if $tool -h >/dev/null 2>&1; then
+                    echo -e "\e[32m✓\e[0m"
+                else
+                    echo -e "\e[31m✗\e[0m"
+                fi
+                ;;
+        esac
+    else
+        echo -e "\e[31m✗ (not found)\e[0m"
+    fi
+done
+EOF
+
+chmod +x test_tools.sh
+echo -e "\n${CYAN}A test script has been created. Run './test_tools.sh' to verify all tools at any time.${NC}"
 go install -v github.com/jaeles-project/gospider@latest
 go install -v github.com/haccer/subjack@latest
 go install -v github.com/tomnomnom/unfurl@latest

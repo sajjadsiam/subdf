@@ -82,22 +82,100 @@ if [ -z "$DOMAIN" ] || [ -z "$OUTPUT_FILE" ] || [ -z "$GITHUB_TOKEN" ]; then
     show_help
 fi
 
-# Create necessary directories
-WORKING_DIR="$DOMAIN-recon"
-mkdir -p "$WORKING_DIR"
-cd "$WORKING_DIR"
+# Set default configuration
+MAX_PARALLEL_TASKS=5      # Maximum number of parallel tasks
+TOOL_TIMEOUT=300          # Default timeout for each tool (5 minutes)
+MEMORY_LIMIT="2G"         # Memory limit per process
+export LC_ALL=C           # Faster string operations
 
-# Function to log verbose output
+# Create necessary directories with RAM disk if available
+setup_workspace() {
+    WORKING_DIR="$DOMAIN-recon"
+    
+    # Try to create RAM disk for faster I/O
+    if command -v mount >/dev/null 2>&1 && [ $(id -u) -eq 0 ]; then
+        RAM_DIR="/mnt/ramdisk"
+        mkdir -p "$RAM_DIR"
+        mount -t tmpfs -o size=2G tmpfs "$RAM_DIR"
+        WORKING_DIR="$RAM_DIR/$DOMAIN-recon"
+    fi
+    
+    mkdir -p "$WORKING_DIR"
+    cd "$WORKING_DIR"
+    
+    # Create subdirectories for better organization
+    mkdir -p {tmp,output,logs}
+}
+
+# Function to log verbose output with timestamp
 log_verbose() {
     if [ "$VERBOSE" = true ]; then
-        echo "[*] $1"
+        echo "[$(date '+%H:%M:%S')] $1"
     fi
+}
+
+# Function to track progress
+track_progress() {
+    local pid=$1
+    local tool=$2
+    local start_time=$(date +%s)
+    
+    while kill -0 $pid 2>/dev/null; do
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
+        printf "\r[*] Running %s... %ds " "$tool" "$elapsed"
+        sleep 1
+    done
+    printf "\r[+] Completed %s in %ds\n" "$tool" "$elapsed"
+}
+
+# Function to run tool with timeout
+run_tool_with_timeout() {
+    local cmd="$1"
+    local tool_name="$2"
+    local timeout="$3"
+    local output_file="$4"
+    
+    if [ "$VERBOSE" = true ]; then
+        $cmd 2>&1 | tee -a "$output_file" & pid=$!
+        track_progress $pid "$tool_name"
+    else
+        $cmd > "$output_file" 2>&1 & pid=$!
+        track_progress $pid "$tool_name"
+    fi
+    
+    # Wait for completion or timeout
+    local count=0
+    while kill -0 $pid 2>/dev/null; do
+        if [ $count -ge $timeout ]; then
+            kill $pid 2>/dev/null
+            echo "[-] $tool_name timed out after ${timeout}s"
+            return 1
+        fi
+        sleep 1
+        ((count++))
+    done
+    wait $pid
+    return 0
 }
 
 # Function to discover subdomains
 subdf() {
     # Check requirements first
     check_requirements
+    
+    # Set performance optimizations
+    export GOMAXPROCS=$(nproc)  # Use all CPU cores
+    export HTTPX_THREADS=50      # Increase HTTPX threads
+    export HTTPX_TIMEOUT=10      # Reduce timeout for faster failure
+    export GAU_THREADS=50        # Increase GAU threads
+    export SUBFINDER_THREADS=50  # Increase subfinder threads
+    
+    # Create temporary directory for parallel processing
+    local tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "$tmp_dir"' EXIT
+    
+    echo "[+] Starting parallel subdomain enumeration..."
 
     echo "[+] Starting subdomain enumeration for $DOMAIN..."
     echo "[+] Results will be saved in $WORKING_DIR"
