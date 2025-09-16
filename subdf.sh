@@ -16,17 +16,48 @@ show_help() {
     exit 1
 }
 
+# Function to check command with retry
+check_command_with_retry() {
+    local tool=$1
+    local max_retries=3
+    local retry_count=0
+    
+    while [ $retry_count -lt $max_retries ]; do
+        if command -v "$tool" &> /dev/null; then
+            return 0
+        fi
+        echo "[!] Retrying check for $tool ($(($retry_count + 1))/$max_retries)..."
+        sleep 2
+        retry_count=$((retry_count + 1))
+    done
+    return 1
+}
+
 # Check if required tools are installed
 check_requirements() {
     local tools=("amass" "subfinder" "assetfinder" "findomain" "github-subdomains" "httpx" "jq" "curl" "chaos" "gauplus" "waybackurls" "gospider" "nuclei" "dnsx" "anew" "puredns")
+    local failed_tools=()
     
+    echo "[*] Checking required tools..."
     for tool in "${tools[@]}"; do
-        if ! command -v "$tool" &> /dev/null; then
-            echo "[-] $tool is not installed. Please install it before running this script."
-            exit 1
+        printf "    %-20s" "$tool"
+        if check_command_with_retry "$tool"; then
+            echo -e "\e[32m[✓]\e[0m"
+        else
+            echo -e "\e[31m[✗]\e[0m"
+            failed_tools+=("$tool")
         fi
     done
-    echo "[+] All required tools are installed."
+    
+    if [ ${#failed_tools[@]} -ne 0 ]; then
+        echo -e "\n[-] Missing tools:"
+        for tool in "${failed_tools[@]}"; do
+            echo "    - $tool"
+        done
+        echo -e "\nPlease install missing tools using ./install.sh"
+        exit 1
+    fi
+    echo -e "\n[+] All required tools are installed."
 }
 
 # Parse command-line arguments
