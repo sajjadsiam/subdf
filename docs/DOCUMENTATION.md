@@ -26,10 +26,12 @@
 ### Quick Install
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/SubdomainFury.git
+git clone https://github.com/sajjadsiam/subdf.git
+y.git
 
 # Navigate to directory
-cd SubdomainFury
+cd subdf
+
 
 # Make scripts executable
 chmod +x install.sh subdf.sh
