@@ -129,6 +129,21 @@ export GONOSUMDB=github.com/*
 print_section "Go-based Tools Installation"
 print_subsection "Installing reconnaissance tools"
 
+# Function to install massdns (dependency for puredns)
+install_massdns() {
+    echo -e "${CYAN}Installing massdns (required for puredns)...${NC}"
+    if ! command -v massdns &>/dev/null; then
+        git clone https://github.com/blechschmidt/massdns.git
+        cd massdns
+        make
+        sudo make install
+        cd ..
+        rm -rf massdns
+    else
+        echo -e "${GREEN}massdns is already installed${NC}"
+    fi
+}
+
 # Define tools to install
 declare -A tools=(
     ["subfinder"]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
@@ -138,13 +153,25 @@ declare -A tools=(
     ["assetfinder"]="github.com/tomnomnom/assetfinder@latest"
     ["anew"]="github.com/tomnomnom/anew@latest"
     ["gauplus"]="github.com/bp0lr/gauplus@latest"
-    ["puredns"]="github.com/d3mondev/puredns/v2@latest"
     ["gau"]="github.com/lc/gau/v2/cmd/gau@latest"
     ["chaos"]="github.com/projectdiscovery/chaos-client/cmd/chaos@latest"
     ["katana"]="github.com/projectdiscovery/katana/cmd/katana@latest"
     ["ffuf"]="github.com/ffuf/ffuf/v2@latest"
     ["waybackurls"]="github.com/tomnomnom/waybackurls@latest"
 )
+
+# Install puredns separately due to dependencies
+install_puredns() {
+    echo -e "${CYAN}Setting up puredns...${NC}"
+    install_massdns
+    GO111MODULE=on go install github.com/d3mondev/puredns/v2@latest
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Successfully installed puredns${NC}"
+    else
+        echo -e "${RED}Failed to install puredns${NC}"
+        return 1
+    fi
+}
 
 # Function to test tool functionality
 test_tool() {
@@ -356,13 +383,49 @@ verify_components() {
     print_subsection "Environment Verification"
     
     # Check environment variables
-    echo -ne "${CYAN}Checking environment variables...${NC}"
-    total_checks=$((total_checks + 1))
-    if [ ! -z "$GOPATH" ] && [ ! -z "$GOROOT" ]; then
-        echo -e "${GREEN} ✓${NC}"
+    echo -e "${CYAN}Checking environment variables:${NC}"
+    total_checks=$((total_checks + 4))  # We're checking 4 environment variables
+    
+    # Check GOPATH
+    echo -ne "  ├─ GOPATH: "
+    if [ ! -z "$GOPATH" ]; then
+        echo -e "${GREEN}✓ ($GOPATH)${NC}"
         passed_checks=$((passed_checks + 1))
     else
-        echo -e "${RED} ✗${NC}"
+        echo -e "${RED}✗${NC}"
+        export GOPATH=$HOME/go
+        echo -e "    └─ ${YELLOW}Fixed: Set GOPATH to $GOPATH${NC}"
+    fi
+    
+    # Check GOROOT
+    echo -ne "  ├─ GOROOT: "
+    if [ ! -z "$GOROOT" ]; then
+        echo -e "${GREEN}✓ ($GOROOT)${NC}"
+        passed_checks=$((passed_checks + 1))
+    else
+        GOROOT=$(go env GOROOT)
+        export GOROOT
+        echo -e "${YELLOW}Fixed: Set to $GOROOT${NC}"
+    fi
+    
+    # Check PATH includes GOPATH/bin
+    echo -ne "  ├─ PATH includes GOPATH/bin: "
+    if [[ ":$PATH:" == *":$GOPATH/bin:"* ]]; then
+        echo -e "${GREEN}✓${NC}"
+        passed_checks=$((passed_checks + 1))
+    else
+        echo -e "${RED}✗${NC}"
+        export PATH="$PATH:$GOPATH/bin"
+        echo -e "    └─ ${YELLOW}Fixed: Added GOPATH/bin to PATH${NC}"
+    fi
+    
+    # Check if Go is properly installed
+    echo -ne "  └─ Go installation: "
+    if go version >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ ($(go version))${NC}"
+        passed_checks=$((passed_checks + 1))
+    else
+        echo -e "${RED}✗${NC}"
         all_good=false
     fi
     
@@ -384,14 +447,42 @@ repair_tool() {
     
     echo -e "${YELLOW}Attempting to repair $tool_name...${NC}"
     
-    # Remove existing installation
+    # Remove existing binary
+    echo -e "${CYAN}Removing existing installation...${NC}"
     rm -f "$(which "$tool_name" 2>/dev/null)" 2>/dev/null
     
-    # Clean Go cache for this tool
-    go clean -cache -modcache "$tool_path"
+    # Clean Go cache globally
+    echo -e "${CYAN}Cleaning Go cache...${NC}"
+    go clean -cache -modcache
     
-    # Reinstall tool
-    if install_tool "$tool_name" "$tool_path"; then
+    # For puredns specific fix
+    if [ "$tool_name" = "puredns" ]; then
+        echo -e "${CYAN}Installing puredns dependencies...${NC}"
+        # Ensure massdns is installed
+        if ! command -v massdns &>/dev/null; then
+            echo -e "${YELLOW}Installing massdns...${NC}"
+            git clone https://github.com/blechschmidt/massdns.git
+            cd massdns
+            make
+            sudo make install
+            cd ..
+            rm -rf massdns
+        fi
+    fi
+    
+    # For gau specific fix
+    if [ "$tool_name" = "gau" ]; then
+        echo -e "${CYAN}Installing gau with specific version...${NC}"
+        GO111MODULE=on go install -v github.com/lc/gau/v2/cmd/gau@latest
+        return $?
+    fi
+    
+    # Reinstall tool with verbose output
+    echo -e "${CYAN}Reinstalling $tool_name...${NC}"
+    GO111MODULE=on go install -v "$tool_path"
+    
+    # Verify installation
+    if command -v "$tool_name" >/dev/null 2>&1 && test_tool "$tool_name"; then
         echo -e "${GREEN}Successfully repaired $tool_name${NC}"
         return 0
     else
