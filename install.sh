@@ -157,7 +157,48 @@ else
     echo -e "${RED}Failed to install puredns. Please check Go installation and PATH.${NC}"
 fi
 
-# Define tools to install
+# Function to check if a tool is properly installed and working
+check_tool_installation() {
+    local tool_name=$1
+    
+    # First check if the tool exists
+    if ! command -v "$tool_name" &>/dev/null; then
+        return 1
+    fi
+    
+    # Then check if it's working properly
+    case $tool_name in
+        "subfinder"|"httpx"|"dnsx"|"nuclei"|"gauplus"|"katana"|"chaos")
+            if ! $tool_name -version &>/dev/null; then
+                return 1
+            fi
+            ;;
+        "assetfinder"|"waybackurls")
+            if ! $tool_name -h &>/dev/null; then
+                return 1
+            fi
+            ;;
+        "anew")
+            if ! echo "test" | $tool_name &>/dev/null; then
+                return 1
+            fi
+            ;;
+        "gau")
+            if ! $tool_name -h &>/dev/null; then
+                return 1
+            fi
+            ;;
+        "ffuf")
+            if ! $tool_name -V &>/dev/null; then
+                return 1
+            fi
+            ;;
+    esac
+    
+    return 0
+}
+
+# Define tools to install with their install paths
 declare -A tools=(
     ["subfinder"]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
     ["httpx"]="github.com/projectdiscovery/httpx/cmd/httpx@latest"
@@ -378,19 +419,45 @@ install_tool() {
     return 0
 }
 
-# Install tools with progress tracking
-total_tools=${#tools[@]}
-current_tool=0
-failed_tools=()
+# Check existing installations first
+print_section "Checking Existing Tools"
+declare -A tools_to_install
+missing_tools=0
+installed_tools=0
 
 for tool_name in "${!tools[@]}"; do
-    current_tool=$((current_tool + 1))
-    echo -e "\n${YELLOW}[$current_tool/$total_tools] Installing $tool_name${NC}"
-    
-    if ! install_tool "$tool_name" "${tools[$tool_name]}"; then
-        failed_tools+=("$tool_name")
+    printf "${CYAN}Checking %-20s${NC}" "$tool_name"
+    if check_tool_installation "$tool_name"; then
+        echo -e "${GREEN}[Already Installed]${NC}"
+        installed_tools=$((installed_tools + 1))
+    else
+        echo -e "${YELLOW}[Need to Install]${NC}"
+        tools_to_install[$tool_name]=${tools[$tool_name]}
+        missing_tools=$((missing_tools + 1))
     fi
 done
+
+echo -e "\n${CYAN}Summary of existing tools:${NC}"
+echo -e "├── Already installed: ${GREEN}$installed_tools${NC}"
+echo -e "└── Need to install:   ${YELLOW}$missing_tools${NC}"
+
+# Only install missing tools
+if [ $missing_tools -gt 0 ]; then
+    print_section "Installing Missing Tools"
+    current_tool=0
+    failed_tools=()
+    
+    for tool_name in "${!tools_to_install[@]}"; do
+        current_tool=$((current_tool + 1))
+        echo -e "\n${YELLOW}[$current_tool/$missing_tools] Installing $tool_name${NC}"
+        
+        if ! install_tool "$tool_name" "${tools_to_install[$tool_name]}"; then
+            failed_tools+=("$tool_name")
+        fi
+    done
+else
+    echo -e "\n${GREEN}All tools are already installed!${NC}"
+fi
 
 # Report installation results
 if [ ${#failed_tools[@]} -eq 0 ]; then
