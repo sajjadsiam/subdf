@@ -129,20 +129,33 @@ export GONOSUMDB=github.com/*
 print_section "Go-based Tools Installation"
 print_subsection "Installing reconnaissance tools"
 
-# Function to install massdns (dependency for puredns)
-install_massdns() {
-    echo -e "${CYAN}Installing massdns (required for puredns)...${NC}"
-    if ! command -v massdns &>/dev/null; then
-        git clone https://github.com/blechschmidt/massdns.git
-        cd massdns
-        make
-        sudo make install
-        cd ..
-        rm -rf massdns
-    else
-        echo -e "${GREEN}massdns is already installed${NC}"
-    fi
-}
+## Ensure $HOME/go/bin is in PATH
+if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
+    export PATH="$PATH:$HOME/go/bin"
+    echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.bashrc
+fi
+
+# Install massdns (dependency for puredns)
+if ! command -v massdns &>/dev/null; then
+    print_subsection "Installing massdns (required for puredns)"
+    git clone https://github.com/blechschmidt/massdns.git
+    cd massdns
+    make
+    sudo make install
+    cd ..
+    rm -rf massdns
+else
+    print_subsection "massdns already installed"
+fi
+
+# Install puredns
+print_subsection "Installing puredns"
+GO111MODULE=on go install github.com/d3mondev/puredns/v2@latest
+if command -v puredns &>/dev/null; then
+    echo -e "${GREEN}Successfully installed puredns${NC}"
+else
+    echo -e "${RED}Failed to install puredns. Please check Go installation and PATH.${NC}"
+fi
 
 # Define tools to install
 declare -A tools=(
@@ -173,10 +186,53 @@ install_puredns() {
     fi
 }
 
-# Function to test tool functionality
+# Function to test tool functionality with enhanced gau testing
 test_tool() {
     local tool_name=$1
     case $tool_name in
+        "gau")
+            echo -e "${CYAN}Performing comprehensive gau verification...${NC}"
+            
+            # Step 1: Check if binary exists
+            if ! command -v gau &>/dev/null; then
+                echo -e "${RED}gau binary not found${NC}"
+                return 1
+            fi
+            
+            # Step 2: Check binary permissions
+            if ! [ -x "$(command -v gau)" ]; then
+                echo -e "${YELLOW}Fixing gau permissions...${NC}"
+                chmod +x "$(command -v gau)"
+            fi
+            
+            # Step 3: Test with minimal flags
+            echo -e "${CYAN}Testing gau basic functionality...${NC}"
+            if timeout 10 gau -h 2>/dev/null; then
+                echo -e "${GREEN}Basic gau test passed${NC}"
+                return 0
+            fi
+            
+            # Step 4: Test with specific provider
+            echo -e "${CYAN}Testing gau with wayback provider...${NC}"
+            if echo "example.com" | timeout 10 gau --providers wayback --verbose=false 2>/dev/null; then
+                echo -e "${GREEN}Provider-specific gau test passed${NC}"
+                return 0
+            fi
+            
+            # Step 5: If all tests fail, try to repair
+            echo -e "${YELLOW}All gau tests failed, attempting repair...${NC}"
+            go clean -modcache
+            GO111MODULE=on go install -v github.com/lc/gau/v2/cmd/gau@v2.2.0
+            
+            # Final test after repair
+            if timeout 5 gau -h 2>/dev/null; then
+                echo -e "${GREEN}gau repaired successfully${NC}"
+                return 0
+            fi
+            
+            echo -e "${RED}gau functionality verification failed${NC}"
+            return 1
+            ;;
         "subfinder")
             $tool_name -version >/dev/null 2>&1
             ;;
@@ -201,9 +257,6 @@ test_tool() {
         "puredns")
             $tool_name -version >/dev/null 2>&1
             ;;
-        "gau")
-            $tool_name -version >/dev/null 2>&1
-            ;;
         "chaos")
             $tool_name -version >/dev/null 2>&1
             ;;
@@ -223,13 +276,86 @@ test_tool() {
     return $?
 }
 
+# Function to install gau specifically
+install_gau() {
+    echo -e "${CYAN}Installing gau with special handling...${NC}"
+    
+    # Clean any existing installation
+    if command -v gau &>/dev/null; then
+        echo -e "${YELLOW}Removing existing gau installation...${NC}"
+        rm -f "$(which gau)"
+    fi
+    
+    # Clean go cache and ensure proper Go environment
+    echo -e "${YELLOW}Preparing Go environment for gau...${NC}"
+    go clean -cache -modcache
+    export GO111MODULE=on
+    export GOBIN=$HOME/go/bin
+    export PATH=$PATH:$GOBIN
+    
+    # Create temporary directory for installation
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir"
+    
+    echo -e "${CYAN}Attempting to install specific version of gau...${NC}"
+    # Try installing a known working version
+    if go install -v github.com/lc/gau/v2/cmd/gau@v2.2.0; then
+        if command -v gau &>/dev/null; then
+            # Verify installation with a simple test
+            if echo "example.com" | timeout 5 gau --providers wayback 2>/dev/null; then
+                echo -e "${GREEN}Successfully installed gau v2.2.0${NC}"
+                cd - > /dev/null
+                rm -rf "$temp_dir"
+                return 0
+            fi
+        fi
+    fi
+    
+    echo -e "${YELLOW}Primary installation failed, trying alternative method...${NC}"
+    # Try alternative installation method
+    if go install -v github.com/lc/gau@latest; then
+        if command -v gau &>/dev/null && gau -version &>/dev/null; then
+            echo -e "${GREEN}Successfully installed gau via alternative method${NC}"
+            return 0
+        fi
+    fi
+    
+    echo -e "${YELLOW}Attempting installation from source...${NC}"
+    # Try building from source
+    git clone https://github.com/lc/gau.git
+    cd gau
+    go build -v ./cmd/gau
+    sudo mv gau /usr/local/bin/
+    cd ..
+    rm -rf gau
+    
+    if command -v gau &>/dev/null && gau -version &>/dev/null; then
+        echo -e "${GREEN}Successfully installed gau from source${NC}"
+        return 0
+    fi
+    
+    echo -e "${RED}All installation methods for gau failed${NC}"
+    return 1
+}
+
 # Function to install a single tool
 install_tool() {
     local tool_name=$1
     local tool_path=$2
     echo -e "${CYAN}Installing $tool_name...${NC}"
     
-    # Try installation
+    # Special handling for gau
+    if [ "$tool_name" = "gau" ]; then
+        if install_gau; then
+            echo -e "${GREEN}Successfully installed and verified gau${NC}"
+            return 0
+        else
+            echo -e "${RED}Failed to install gau${NC}"
+            return 1
+        fi
+    fi
+    
+    # Regular tool installation
     if ! retry_command "go install -v $tool_path" "$tool_name"; then
         echo -e "${RED}Failed to install $tool_name${NC}"
         return 1
